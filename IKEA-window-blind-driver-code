@@ -53,11 +53,12 @@ metadata {
 
         preferences {
 
-            	input name: "openLevel", type: "number", defaultValue: 0, range: "0..100", title: "Max open level",
+            input name: "openLevel", type: "number", defaultValue: 0, range: "0..100", title: "Max open level",
                 description: "Max percentage open when Open function is called\n" +
                              "(delete or set value to 0 to disable this)"
-		input name: "debugOutput", type: "bool", title: "Enable debug logging?", defaultValue: true
-		input name: "descTextOutput", type: "bool", title: "Enable descriptionText logging?", defaultValue: true
+		    input name: "debugOutput", type: "bool", title: "Enable debug logging?", defaultValue: true
+		    input name: "descTextOutput", type: "bool", title: "Enable descriptionText logging?", defaultValue: true
+            input name: "refreshDelay", type: "number", defaultValue: 5, title: "Delay to refresh() after command"
         }
   
 }
@@ -86,10 +87,11 @@ private List<Map> collectAttributes(Map descMap) {
 
 // Parse incoming device messages to generate events
 def parse(String description) {
-    if (debugOutput) log.debug "description:- ${description}"
+    if (debugOutput) log.debug "parse() - description:- ${description}"
     def now = new Date().format("yyyy MMM dd EEE h:mm:ss a", location.timeZone)
     //  send event for heartbeat    
     sendEvent(name: "lastCheckin", value: now)
+    if (debugOutput) log.debug "sendEvent(name: lastCheckin, value: ${now})"
     if (description?.startsWith("read attr -")) {
         Map descMap = zigbee.parseDescriptionAsMap(description)
         if (descMap?.clusterInt == CLUSTER_WINDOW_COVERING && descMap.value) {
@@ -105,14 +107,16 @@ def parse(String description) {
             if (debugOutput) log.debug "attr: ${descMap?.attrInt}, value: ${descMap?.value}, descValue: ${Integer.parseInt(descMap.value, 16)}"
             sendEvent(name: "battery", value: Integer.parseInt(descMap.value, 16), unit: "%")
         }
+    } else {
+        if (debugOutput) log.debug "parse didn't do anything"
     }
 }
 
 def levelEventHandler(currentLevel) {
     def lastLevel = device.currentValue("level")
-    if (debugOutput) log.debug "levelEventHandle - currentLevel: ${currentLevel} lastLevel: ${lastLevel}"
+    if (debugOutput) log.debug "levelEventHandler - currentLevel: ${currentLevel} lastLevel: ${lastLevel}"
     if (lastLevel == "undefined" || currentLevel == lastLevel) { //Ignore invalid reports
-        if (debugOutput) log.debug "undefined lastLevel"
+        if (debugOutput) log.debug "undefined lastLevel - run updateFinalState() in ${refreshDelay} seconds"
         runIn(3, "updateFinalState", [overwrite:true])
     } else {
         sendEvent(name: "level", value: currentLevel)
@@ -129,27 +133,31 @@ def levelEventHandler(currentLevel) {
         }
     }
     if (lastLevel != currentLevel) {
-        if (debugOutput) log.debug "newlevel: ${newLevel} currentlevel: ${currentLevel} lastlevel: ${lastLevel}"
-        runIn(5, refresh)
+        if (debugOutput) log.debug "newlevel: ${newLevel} currentlevel: ${currentLevel} lastlevel: ${lastLevel}, then refresh in ${refreshDelay} seconds"
+        runIn(refreshDelay, refresh)
     }
 }
 
 def updateFinalState() {
     def level = device.currentValue("level")
-    if (debugOutput) log.debug "updateFinalState: ${level}"
+    if (debugOutput) log.debug "updateFinalState: level = ${level}"
     sendEvent(name: "windowShade", value: level == 0 ? "closed" : "open")
+    if (debugOutput) log.debug "sendEvent(name: windowShade, value: ${level == 0 ? "closed" : "open"})"
     sendEvent(name: "switch", value: level == 0 ? "off" : "on", displayed: false)
+    if (debugOutput) log.debug "sendEvent(name: switch, value: ${level == 0 ? "off" : "on"})"
 }
 
 def close() {
     if (descTextOutput) log.info "close()"
-    runIn(5, refresh)
+    if (debugOutput) log.info "close() - then refresh in ${refreshDelay} seconds"
+    runIn(refreshDelay, refresh)
     zigbee.command(CLUSTER_WINDOW_COVERING, COMMAND_CLOSE)
 }
 
 def open() {
     if (descTextOutput) log.info "open()"
-    runIn(5, refresh)
+    if (debugOutput) log.info "open() - openLevel = ${openLevel} - refresh in ${refreshDelay} seconds"
+    runIn(refreshDelay, refresh)
     if (openLevel) {
         setLevel(openLevel)
     } else {
@@ -158,29 +166,35 @@ def open() {
 }
 
 def on() {
+    if (debugOutput) log.info "on() - calling open()"
     open()
 }
 
 def off() {
+    if (debugOutput) log.info "off() - calling close()"
     close()
 }
 
 def hardOpen() {
-    if (descTextOutput) log.info "hardOpen()"
-    runIn(5, refresh)
+    if (descTextOutput && !debugOutput) log.info "hardOpen()"
+    if (debugOutput) log.info "hardOpen() - then refresh in ${refreshDelay} seconds"
+    runIn(refreshDelay, refresh)
     zigbee.command(CLUSTER_WINDOW_COVERING, COMMAND_OPEN)
     
 }
 
 def setLevel(data, rate = null) {
-    runIn(5, refresh)
+    if (debugOutput) log.info "setLevel() - refresh in ${refreshDelay} seconds"
+    runIn(refreshDelay, refresh)
     data = data.toInteger()
     if (descTextOutput) log.info "setLevel()"
+    if (debugOutput) log.info "setLevel() - level = ${data}, rate = ${rate}"
     if (data == 100) {
         open()
     } else {
         def cmd
         cmd = zigbee.command(CLUSTER_WINDOW_COVERING, COMMAND_GOTO_LIFT_PERCENTAGE, zigbee.convertToHexString(100 - data, 2))
+        if (debugOutput) log.info "cmd = " + cmd
         return cmd
     }
 }
@@ -197,6 +211,11 @@ def refresh() {
     def cmds
     cmds = zigbee.readAttribute(CLUSTER_WINDOW_COVERING, ATTRIBUTE_POSITION_LIFT) + zigbee.readAttribute(CLUSTER_BATTERY_LEVEL, 0x0021) 
 
+    if (debugOutput) log.info "cmds = " + cmds
+    
+    Map descMap = zigbee.parseDescriptionAsMap(cmds[0])
+    if (debugOutput) log.info "descMap = " + descMap
+    
     return cmds
 }
 
@@ -212,10 +231,12 @@ def configure() {
 }
 
 def setPosition(value){
+    if (debugOutput) log.debug "setPosition(): level = ${value}"
 	setLevel(value)
 }
 
 def updated() {
+    if (debugOutput) log.debug "updated(): calling unschedule()"
 	unschedule()
 	if (debugOutput) runIn(1800,logsOff)
 }
